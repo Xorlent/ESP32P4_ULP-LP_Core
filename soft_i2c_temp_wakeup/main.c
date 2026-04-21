@@ -276,7 +276,7 @@ static uint32_t s_sht4x_measure(uint16_t *raw_temp,
 
 int main(void)
 {
-    // Unhold is the key to get software I2C to work on these pins, requires external pull-ups (10kOhm used in testing)
+    // Unhold is required to get software I2C to work on these pins, requires external pull-ups (10kOhm used in testing)
     pmu_enable_unhold_pads();
     PMU_SLP_WAKEUP_CNTL2 |= (1u << 1);
     shared->status |= ULP_STATUS_RUNNING;
@@ -284,8 +284,10 @@ int main(void)
 
     const lp_io_num_t sda_pin = (lp_io_num_t)(shared->config0 & 0x0Fu);
     const lp_io_num_t scl_pin = (lp_io_num_t)(shared->config1 & 0x0Fu);
-    const uint16_t raw_low_limit = ULP_UNPACK_U16_PAIR_LOW(shared->config2);
-    const uint16_t raw_high_limit = ULP_UNPACK_U16_PAIR_HIGH(shared->config2);
+    const uint16_t raw_temp_low_limit = ULP_UNPACK_U16_PAIR_LOW(shared->config2);
+    const uint16_t raw_temp_high_limit = ULP_UNPACK_U16_PAIR_HIGH(shared->config2);
+    const uint16_t raw_humidity_low_limit = ULP_UNPACK_U16_PAIR_LOW(shared->config3);
+    const uint16_t raw_humidity_high_limit = ULP_UNPACK_U16_PAIR_HIGH(shared->config3);
 
     s_i2c_bus_init(sda_pin, scl_pin);
 
@@ -301,7 +303,16 @@ int main(void)
     shared->data[0] = raw_temp;
     shared->data[2] = raw_humidity;
 
-    if ((raw_temp < raw_low_limit) || (raw_temp > raw_high_limit)) {
+    const bool temp_enabled = raw_temp_low_limit <= raw_temp_high_limit;
+    const bool humidity_enabled = raw_humidity_low_limit <= raw_humidity_high_limit;
+
+    const bool temp_triggered = temp_enabled &&
+        ((raw_temp < raw_temp_low_limit) || (raw_temp > raw_temp_high_limit));
+    const bool humidity_triggered = humidity_enabled &&
+        ((raw_humidity < raw_humidity_low_limit) ||
+         (raw_humidity > raw_humidity_high_limit));
+
+    if (temp_triggered || humidity_triggered) {
         shared->status |= ULP_STATUS_WAKEUP_PENDING;
         ulp_lp_core_wakeup_main_processor();
         ulp_lp_core_halt();
