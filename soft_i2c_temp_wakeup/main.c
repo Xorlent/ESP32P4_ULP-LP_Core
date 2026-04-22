@@ -13,10 +13,12 @@ extern void pmu_enable_unhold_pads(void);
 
 // PMU_SLP_WAKEUP_CNTL2_REG - Bit 1 enables the PMU software wakeup source
 #define PMU_SLP_WAKEUP_CNTL2  (*(volatile uint32_t *)0x50115128u)
+#define SOFT_I2C_MAX_LP_IO_NUM            15u
 
 //Timings
 #define SOFT_I2C_HALF_PERIOD_US           5u
 #define SOFT_I2C_SCL_WAIT_RETRIES         64u
+#define SOFT_I2C_POWER_SETTLE_DELAY_US    2000u
 // SHT4X sensor constants
 #define SHT4X_I2C_ADDR_7BIT               0x44u
 #define SHT4X_I2C_WRITE_ADDR              ((SHT4X_I2C_ADDR_7BIT << 1) | 0u)
@@ -37,6 +39,36 @@ enum {
 
 static lp_io_num_t s_sda_pin;
 static lp_io_num_t s_scl_pin;
+static uint16_t s_power_pin;
+
+static bool s_power_gpio_enabled(void)
+{
+    return s_power_pin <= SOFT_I2C_MAX_LP_IO_NUM;
+}
+
+static void s_power_gpio_init(void)
+{
+    if (!s_power_gpio_enabled()) {
+        return;
+    }
+
+    const lp_io_num_t power_pin = (lp_io_num_t)s_power_pin;
+    ulp_lp_core_gpio_init(power_pin);
+    ulp_lp_core_gpio_output_enable(power_pin);
+    ulp_lp_core_gpio_set_output_mode(power_pin, RTCIO_LL_OUTPUT_NORMAL);
+    ulp_lp_core_gpio_pullup_disable(power_pin);
+    ulp_lp_core_gpio_pulldown_disable(power_pin);
+    ulp_lp_core_gpio_set_level(power_pin, 0);
+}
+
+static void s_power_gpio_set(bool enabled)
+{
+    if (!s_power_gpio_enabled()) {
+        return;
+    }
+
+    ulp_lp_core_gpio_set_level((lp_io_num_t)s_power_pin, enabled ? 1 : 0);
+}
 
 static void s_i2c_delay(void)
 {
@@ -282,18 +314,26 @@ int main(void)
     shared->status |= ULP_STATUS_RUNNING;
     shared->lp_counter++;
 
-    const lp_io_num_t sda_pin = (lp_io_num_t)(shared->config0 & 0x0Fu);
-    const lp_io_num_t scl_pin = (lp_io_num_t)(shared->config1 & 0x0Fu);
+    const lp_io_num_t sda_pin = (lp_io_num_t)ULP_UNPACK_U16_PAIR_LOW(shared->config0);
+    const lp_io_num_t scl_pin = (lp_io_num_t)ULP_UNPACK_U16_PAIR_HIGH(shared->config0);
+    s_power_pin = ULP_UNPACK_U16_PAIR_LOW(shared->config1);
     const uint16_t raw_temp_low_limit = ULP_UNPACK_U16_PAIR_LOW(shared->config2);
     const uint16_t raw_temp_high_limit = ULP_UNPACK_U16_PAIR_HIGH(shared->config2);
     const uint16_t raw_humidity_low_limit = ULP_UNPACK_U16_PAIR_LOW(shared->config3);
     const uint16_t raw_humidity_high_limit = ULP_UNPACK_U16_PAIR_HIGH(shared->config3);
+
+    s_power_gpio_init();
+    s_power_gpio_set(true);
+    ulp_lp_core_delay_us(SOFT_I2C_POWER_SETTLE_DELAY_US);
 
     s_i2c_bus_init(sda_pin, scl_pin);
 
     uint16_t raw_temp = 0;
     uint16_t raw_humidity = 0;
     const uint32_t status = s_sht4x_measure(&raw_temp, &raw_humidity);
+
+    s_power_gpio_set(false);
+
     shared->data[1] = status;
 
     if (status != SOFT_I2C_TEMP_STATUS_OK) {
